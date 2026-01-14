@@ -24,6 +24,7 @@ from langgraph.runtime import Runtime
 from deepagents_cli.config import COLORS, config, console, get_default_coding_instructions, settings
 from deepagents_cli.integrations.sandbox_factory import get_default_working_dir
 from deepagents_cli.shell import ShellMiddleware
+from deepagents_cli.mcp_loader_custom import load_mcp_tools_custom, find_mcp_config
 
 
 def list_agents() -> None:
@@ -366,6 +367,16 @@ def create_cli_agent(
         - composite_backend: CompositeBackend for file operations
     """
     tools = tools or []
+
+    # Load MCP tools from mcp.json if available
+    mcp_config_path = find_mcp_config()
+    if mcp_config_path:
+        console.print(f"\n[dim]Loading MCP servers from: {mcp_config_path}[/dim]")
+        import asyncio
+        mcp_tools = asyncio.run(load_mcp_tools_custom(mcp_config_path))
+        if mcp_tools:
+            tools.extend(mcp_tools)
+            console.print(f"[green]✓[/green] Loaded {len(mcp_tools)} MCP tool(s)\n")
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:

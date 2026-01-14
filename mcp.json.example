@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "example-server": {
+      "command": "python",
+      "args": ["-c", "import sys; print(f'Query: {sys.argv[1]}')"],
+      "env": {}
+    }
+  }
+}

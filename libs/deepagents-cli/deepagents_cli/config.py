@@ -12,7 +12,13 @@ from rich.console import Console
 
 from deepagents_cli._version import __version__
 
-dotenv.load_dotenv()
+# Load .env from multiple locations (for end users with wheel installation)
+# Priority: ~/.deepagents/.env > ./.env
+user_env = Path.home() / ".deepagents" / ".env"
+if user_env.exists():
+    dotenv.load_dotenv(user_env)
+else:
+    dotenv.load_dotenv()  # Load from current directory
 
 # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to separate project
 # LangSmith reads LANGSMITH_PROJECT at invocation time, so we override it here
