@@ -1,6 +1,6 @@
 # 🚀🧠 Deep Agents CLI
 
-The [agentscli](https://github.com/langchain-ai/deepagents) CLI is an open source coding assistant that runs in your terminal, similar to Claude Code.
+The [agentscli](https://github.com/anhminhnguyen3110/agent-cli) CLI is an open source coding assistant that runs in your terminal, similar to Claude Code.
 
 **Key Features:**
 
@@ -13,12 +13,12 @@ The [agentscli](https://github.com/langchain-ai/deepagents) CLI is an open sourc
 
 ## 🚀 Quickstart
 
-`deepagents-cli` is a Python package that can be installed via pip or uv.
+`agentscli-cli` is a Python package that can be installed via pip or uv.
 
 **Install via pip:**
 
 ```bash
-pip install deepagents-cli
+pip install agentscli-cli
 ```
 
 **Or using uv (recommended):**
@@ -28,7 +28,7 @@ pip install deepagents-cli
 uv venv
 
 # Install the package
-uv pip install deepagents-cli
+uv pip install agentscli-cli
 ```
 
 **Run the agent in your terminal:**
@@ -40,7 +40,7 @@ agentscli
 **Get help:**
 
 ```bash
-deepagents help
+agentscli help
 ```
 
 **Common options:**
@@ -377,7 +377,7 @@ make test
 ### Running During Development
 
 ```bash
-# From libs/deepagents-cli directory
+# From libs/agentscli-cli directory
 uv run agentscli
 
 # Or install in editable mode
