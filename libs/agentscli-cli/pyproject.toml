@@ -6,7 +6,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11,<4.0"
 dependencies = [
-  "agentscli==0.2.8,<1.0.0",
+  "agentscli>=0.3.5,<1.0.0",
   "langchain>=1.2.3,<2.0.0",
   "langchain-openai>=1.1.7,<2.0.0",
   "langgraph-checkpoint-sqlite>=2.0.0,<3.0.0",

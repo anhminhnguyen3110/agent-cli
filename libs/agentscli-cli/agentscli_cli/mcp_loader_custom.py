@@ -2,6 +2,7 @@
 Custom MCP loader for Windows - bypasses stdio issues with langchain-mcp-adapters.
 
 Uses direct subprocess communication instead of mcp SDK's stdio_client.
+Maintains persistent connections and implements full MCP protocol handshake.
 """
 
 import asyncio
@@ -12,6 +13,147 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
+
+
+class MCPServerConnection:
+    """Maintains a persistent connection to an MCP server subprocess."""
+    
+    def __init__(self, server_config: 'MCPServerConfig'):
+        self.config = server_config
+        self.process: asyncio.subprocess.Process | None = None
+        self._initialized = False
+        self._request_id = 0
+        
+    async def __aenter__(self):
+        """Start the MCP server subprocess."""
+        import sys
+        
+        # Build command
+        if sys.platform == "win32" and self.config.command in ["npx", "node"]:
+            cmd = ["cmd.exe", "/c", "npx"] + self.config.args
+        else:
+            cmd = [self.config.command] + self.config.args
+        
+        # Start process
+        env = {**subprocess.os.environ, **self.config.env} if self.config.env else None
+        
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Clean up the subprocess."""
+        if self.process:
+            try:
+                # Close stdin first to signal clean shutdown
+                if self.process.stdin:
+                    self.process.stdin.close()
+                    await asyncio.sleep(0.1)  # Give process time to shutdown gracefully
+                
+                # Then terminate if still running
+                if self.process.returncode is None:
+                    self.process.terminate()
+                    try:
+                        await asyncio.wait_for(self.process.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        self.process.kill()
+                        await self.process.wait()
+            except Exception:
+                # Suppress any cleanup errors
+                pass
+    
+    def _next_id(self) -> int:
+        """Get next request ID."""
+        self._request_id += 1
+        return self._request_id
+    
+    async def send_request(self, method: str, params: dict | None = None) -> dict:
+        """Send JSON-RPC request and wait for response."""
+        if not self.process:
+            return {"error": "Connection not established"}
+        
+        request = {
+            "jsonrpc": "2.0",
+            "id": self._next_id(),
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
+        
+        try:
+            # Send request
+            request_str = json.dumps(request) + "\n"
+            self.process.stdin.write(request_str.encode())
+            await self.process.stdin.drain()
+            
+            # Read response
+            line = await asyncio.wait_for(
+                self.process.stdout.readline(),
+                timeout=10.0
+            )
+            
+            if line:
+                response = json.loads(line.decode())
+                if "result" in response:
+                    return response["result"]
+                if "error" in response:
+                    return {"error": response["error"]}
+            
+            return {"error": "No response from server"}
+            
+        except asyncio.TimeoutError:
+            return {"error": "Response timeout"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    async def send_notification(self, method: str, params: dict | None = None) -> None:
+        """Send JSON-RPC notification (no response expected)."""
+        if not self.process:
+            return
+        
+        notification = {
+            "jsonrpc": "2.0",
+            "method": method,
+        }
+        if params is not None:
+            notification["params"] = params
+        
+        try:
+            notification_str = json.dumps(notification) + "\n"
+            self.process.stdin.write(notification_str.encode())
+            await self.process.stdin.drain()
+        except Exception:
+            pass
+    
+    async def initialize(self) -> bool:
+        """Perform MCP handshake: initialize → initialized notification."""
+        if self._initialized:
+            return True
+        
+        # Send initialize request
+        init_result = await self.send_request("initialize", {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "agentscli-cli",
+                "version": "0.0.12"
+            }
+        })
+        
+        if "error" in init_result:
+            return False
+        
+        # Send initialized notification
+        await self.send_notification("notifications/initialized")
+        
+        self._initialized = True
+        return True
 
 
 class MCPServerConfig(BaseModel):
@@ -41,90 +183,29 @@ def load_mcp_config(config_path: str | Path) -> MCPConfig | None:
         return None
 
 
-async def call_mcp_rpc(server_config: MCPServerConfig, method: str, params: dict = None) -> dict:
-    """Call MCP server with JSON-RPC request."""
-    import sys
-    
-    # Build command - use cmd.exe on Windows for .cmd files
-    if sys.platform == "win32" and server_config.command in ["npx", "node"]:
-        cmd = ["cmd.exe", "/c", "npx"] + server_config.args
-    else:
-        cmd = [server_config.command] + server_config.args
-    
-    # JSON-RPC request
-    request = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params or {}
-    }
-    
-    try:
-        # Start process
-        env = {**subprocess.os.environ, **server_config.env} if server_config.env else None
-        
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-        
-        # Send request
-        request_str = json.dumps(request) + "\n"
-        process.stdin.write(request_str.encode())
-        await process.stdin.drain()
-        
-        # Read response from stdout (stderr has server logs)
-        try:
-            line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=5.0
-            )
-            
-            if line:
-                response = json.loads(line.decode())
-                if "result" in response:
-                    return response["result"]
-                if "error" in response:
-                    return {"error": response["error"]}
-            
-            return {"error": "No response from server"}
-            
-        except asyncio.TimeoutError:
-            return {"error": "Response timeout"}
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-
 async def get_mcp_tools_list(server_name: str, server_config: MCPServerConfig) -> list[dict]:
-    """Get list of tools from MCP server."""
-    # First initialize
-    init_result = await call_mcp_rpc(server_config, "initialize", {
-        "protocolVersion": "2024-11-05",
-        "capabilities": {},
-        "clientInfo": {
-            "name": "agentscli-cli",
-            "version": "0.0.12"
-        }
-    })
-    
-    if "error" in init_result:
-        print(f"  [X] {server_name}: {init_result['error']}")
+    """Get list of tools from MCP server using persistent connection."""
+    try:
+        async with MCPServerConnection(server_config) as conn:
+            # Perform handshake
+            if not await conn.initialize():
+                print(f"  [X] {server_name}: Failed to initialize")
+                return []
+            
+            # List tools
+            tools_result = await conn.send_request("tools/list")
+            
+            if "error" in tools_result:
+                print(f"  [X] {server_name}: {tools_result['error']}")
+                return []
+            
+            tools = tools_result.get("tools", [])
+            print(f"  [OK] {server_name}: {len(tools)} tools")
+            return tools
+            
+    except Exception as e:
+        print(f"  [X] {server_name}: {e}")
         return []
-    
-    # Then list tools
-    tools_result = await call_mcp_rpc(server_config, "tools/list", {})
-    
-    if "error" in tools_result:
-        print(f"  [X] {server_name}: {tools_result['error']}")
-        return []
-    
-    tools = tools_result.get("tools", [])
-    print(f"  [OK] {server_name}: {len(tools)} tools")
-    return tools
 
 
 def create_mcp_tool(server_name: str, server_config: MCPServerConfig, tool_info: dict) -> BaseTool:
@@ -135,24 +216,34 @@ def create_mcp_tool(server_name: str, server_config: MCPServerConfig, tool_info:
     tool_schema = tool_info.get("inputSchema", {})
     
     async def run_tool(**kwargs) -> str:
-        """Execute the MCP tool."""
-        result = await call_mcp_rpc(server_config, "tools/call", {
-            "name": tool_name,
-            "arguments": kwargs
-        })
-        
-        if "error" in result:
-            return f"Error: {result['error']}"
-        
-        # Extract content from result
-        content = result.get("content", [])
-        if isinstance(content, list) and len(content) > 0:
-            first_item = content[0]
-            if isinstance(first_item, dict):
-                return first_item.get("text", str(first_item))
-            return str(first_item)
-        
-        return str(result)
+        """Execute the MCP tool using persistent connection."""
+        try:
+            async with MCPServerConnection(server_config) as conn:
+                # Initialize connection
+                if not await conn.initialize():
+                    return "Error: Failed to initialize MCP connection"
+                
+                # Call tool
+                result = await conn.send_request("tools/call", {
+                    "name": tool_name,
+                    "arguments": kwargs
+                })
+                
+                if "error" in result:
+                    return f"Error: {result['error']}"
+                
+                # Extract content from result
+                content = result.get("content", [])
+                if isinstance(content, list) and len(content) > 0:
+                    first_item = content[0]
+                    if isinstance(first_item, dict):
+                        return first_item.get("text", str(first_item))
+                    return str(first_item)
+                
+                return str(result)
+                
+        except Exception as e:
+            return f"Error: {e}"
     
     return StructuredTool(
         name=f"{server_name}_{tool_name}",

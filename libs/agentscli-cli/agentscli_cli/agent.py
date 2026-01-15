@@ -373,10 +373,24 @@ def create_cli_agent(
     if mcp_config_path:
         console.print(f"\n[dim]Loading MCP servers from: {mcp_config_path}[/dim]")
         import asyncio
-        mcp_tools = asyncio.run(load_mcp_tools_custom(mcp_config_path))
+        import concurrent.futures
+        
+        # Check if we're in an async context (e.g., Textual app with running event loop)
+        try:
+            loop = asyncio.get_running_loop()
+            # Already in an event loop - run in separate thread to avoid conflict
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    lambda: asyncio.run(load_mcp_tools_custom(mcp_config_path))
+                )
+                mcp_tools = future.result()
+        except RuntimeError:
+            # No running loop, safe to use asyncio.run()
+            mcp_tools = asyncio.run(load_mcp_tools_custom(mcp_config_path))
+        
         if mcp_tools:
             tools.extend(mcp_tools)
-            console.print(f"[green]✓[/green] Loaded {len(mcp_tools)} MCP tool(s)\n")
+            console.print(f"[green][OK][/green] Loaded {len(mcp_tools)} MCP tool(s)\n")
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -306,6 +307,7 @@ class ChatInput(Vertical):
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
+        self._debounce_task: asyncio.Task | None = None
 
         # Set up history manager
         if history_file is None:
@@ -335,7 +337,7 @@ class ChatInput(Vertical):
         self._text_area.focus()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """Detect input mode and update completions."""
+        """Detect input mode and update completions with debouncing."""
         text = event.text_area.text
 
         # Update mode based on first character
@@ -352,10 +354,25 @@ class ChatInput(Vertical):
                 self._completion_manager.reset()
             return
 
-        # Update completion suggestions
-        if self._completion_manager and self._text_area:
-            cursor_offset = self._get_cursor_offset()
-            self._completion_manager.on_text_changed(text, cursor_offset)
+        # Cancel previous debounce task if exists
+        if self._debounce_task and not self._debounce_task.done():
+            self._debounce_task.cancel()
+
+        # Schedule completion update with debounce to reduce flicker with IME input (e.g., Unikey)
+        self._debounce_task = asyncio.create_task(self._update_completions_debounced(text))
+
+    async def _update_completions_debounced(self, text: str) -> None:
+        """Update completions after a short delay to avoid flicker with Vietnamese input methods."""
+        try:
+            # Wait 50ms before updating completions to batch rapid text changes
+            await asyncio.sleep(0.05)
+            
+            if self._completion_manager and self._text_area:
+                cursor_offset = self._get_cursor_offset()
+                self._completion_manager.on_text_changed(text, cursor_offset)
+        except asyncio.CancelledError:
+            # Task was cancelled, ignore
+            pass
 
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission."""
